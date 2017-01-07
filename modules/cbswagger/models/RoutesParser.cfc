@@ -48,9 +48,10 @@ component accessors="true" threadsafe singleton{
 		}
 
 		var apiRoutes = filterDesignatedRoutes();
-		
-		for( var path in apiRoutes ){
-			template[ "paths" ].putAll( createPathsFromRouteConfig( apiRoutes[ path ] ) );
+		var paths = structKeyArray(apiRoutes);
+
+		for ( var i=1; i <= arrayLen(paths); i++ ){
+			template[ "paths" ].putAll( createPathsFromRouteConfig( apiRoutes[ paths[i] ] ) );
 		}
 
 		return getOpenAPIParser().parse( template ).getDocumentObject();
@@ -62,7 +63,7 @@ component accessors="true" threadsafe singleton{
 	private any function filterDesignatedRoutes(){
 		var routingPrefixes = variables.cbSwaggerSettings.routes;
 		// make a copy of our routes array so we can append it
-		var SESRoutes 			= duplicate( variables.SESRoutes );
+		var SESRoutes 			= duplicate( variables.SESRoutes );		
 		var moduleSESRoutes 	= [];
 		var designatedRoutes 	= {};
 
@@ -86,7 +87,9 @@ component accessors="true" threadsafe singleton{
 			if( 
 				structKeyExists( moduleConfigCache, route.module ) 
 				&& 
-				structKeyExists( moduleConfigCache[ route.module ], "entrypoint" ) 
+				structKeyExists( moduleConfigCache[ route.module ], "entrypoint" )
+				&&
+				( structKeyExists( route, "action" ) && isStruct(route.action) )
 			){
 				route.pattern = moduleConfigCache[ route.module ].entrypoint & '/' & route.pattern;
 
@@ -104,7 +107,7 @@ component accessors="true" threadsafe singleton{
 				}
 			}
 		}
-		
+	
 		// Now custom sort our routes alphabetically
 		var entrySet 		= structKeyArray( designatedRoutes );
 		var sortedRoutes 	= createLinkedHashMap();
@@ -136,7 +139,7 @@ component accessors="true" threadsafe singleton{
 		var pathArray 		= listToArray( getOpenAPIUtil().translatePath( arguments.route.pattern ), "/" );
 		var assembledRoute 	= [];
 		var handlerMetadata = getHandlerMetadata( arguments.route );
-		
+
 		for( var routeSegment in pathArray ){
 			if( findNoCase( "?", routeSegment ) ){
 				//first add the already assembled path
@@ -188,23 +191,23 @@ component accessors="true" threadsafe singleton{
 				for( var methodName in listToArray( methodList ) ){
 					// handle explicit SES workarounds
 					if( !arrayFindNoCase( errorMethods, actions[ methodList ] ) ){
-						path.put( ucase( methodName ), getOpenAPIUtil().newMethod() );
+						path.put( lcase( methodName ), getOpenAPIUtil().newMethod() );
 					
 						if( !isNull( arguments.handlerMetadata ) ){
-							appendFunctionInfo( path[ ucase( methodName ) ], actions[ methodList ], arguments.handlerMetadata );
+							appendFunctionInfo( path[ lcase( methodName ) ], actions[ methodList ], arguments.handlerMetadata );
 						}	
 					}
 				}
 			}
 		} else{
 			for( var methodName in getOpenAPIUtil().defaultMethods() ){
-				path.put( ucase( methodName ), getOpenAPIUtil().newMethod() );
+				path.put( lcase( methodName ), getOpenAPIUtil().newMethod() );
 				if( len( actions ) && !isNull( arguments.handlerMetadata ) ){
-					appendFunctionInfo( path[ ucase( methodName ) ], actions, arguments.handlerMetadata );
+					appendFunctionInfo( path[ lcase( methodName ) ], actions, arguments.handlerMetadata );
 				}	
 			}
 		}
-		
+	
 		arguments.existingPaths.put( arguments.pathKey, path );
 	}
 	
@@ -243,41 +246,44 @@ component accessors="true" threadsafe singleton{
 		required string functionName,
 		required any handlerMetadata
 	){
-
 		arguments.method[ "operationId" ] = arguments.functionName;
 
 		var functionMetaData = getFunctionMetaData( arguments.functionName, arguments.handlerMetadata );
 		
-		if( !isNull( functionMetadata ) ){						
+		if ( !isNull( functionMetadata ) ){						
 			var defaultKeys = structKeyArray( arguments.method );
 			for( var infoKey in functionMetaData ){
-				if( findNoCase( "x-", infoKey ) ){
-					var normalizedKey = replaceNoCase( infoKey, "x-", "" );
+				var infoKeyLabel = ( left(infoKey, 5) == "swag-" ) ? infoKey.replace("swag-", "") : infoKey;
+				if ( findNoCase( "x-", infoKeyLabel ) ){
+					var normalizedKey = replaceNoCase( infoKeyLabel, "x-", "" );
 					//evaluate whether we have an x- replacement or a standard x-attribute
-					if( arrayContains( defaultKeys, normalizedKey ) ){
-						//check for $ref includes
-						if( 
-							right( functionMetaData[ infoKey ], 5 ) == '.json' 
-							|| 
-							left( functionMetaData[ infoKey ], 4 ) == 'http' 
-						){
-							method[ normalizedKey ] = { "$ref" : functionMetaData[ infoKey ] };
-						} else {
+					if ( arrayContains( defaultKeys, normalizedKey ) ){
+						// check for relative schemas
+						if ( right( functionMetaData[ infoKey ], 5 ) == '.json' && fileExists( functionMetaData[ infoKey ] ) ){
+							try{
+								method[ normalizedKey ] = deserializeJSON( fileRead(functionMetaData[ infoKey ]) );
+							} catch(any e){
+								method[ normalizedKey ] = "could not dereference schema."
+							}
+						} 
+						else {
 							method[ normalizedKey ] = functionMetaData[ infoKey ];	
 						}
-					} else {
-						method[ infoKey ] = functionMetaData[ infoKey ];
+					} 
+					else {
+						method[ infoKeyLabel ] = functionMetaData[ infoKey ];
 					}
-				} else if( arrayContains( defaultKeys, infoKey ) && isSimpleValue( functionMetadata[ infoKey ] ) ){
-					//check for $ref includes
-					if( 
-						right( functionMetaData[ infoKey ], 5 ) == '.json' 
-						|| 
-						left( functionMetaData[ infoKey ], 4 ) == 'http' 
-					){
-						method[ infoKey ] = { "$ref" : functionMetaData[ infoKey ] };
-					} else {
-						method[ infoKey ] = functionMetaData[ infoKey ];	
+				} else if ( arrayContains( defaultKeys, infoKeyLabel ) && isSimpleValue( functionMetadata[ infoKey ] ) ){
+					// check for relative schemas
+					if ( right( functionMetaData[ infoKey ], 5 ) == '.json' && fileExists( functionMetaData[ infoKey ] ) ){
+						try{
+							method[ infoKeyLabel ] = deserializeJSON( fileRead(functionMetaData[ infoKey ]) );
+						} catch(any e){
+							method[ infoKeyLabel ] = "could not dereference schema."
+						}
+					} 
+					else {
+						method[ infoKeyLabel ] = functionMetaData[ infoKey ];	
 					}
 				}
 			}
